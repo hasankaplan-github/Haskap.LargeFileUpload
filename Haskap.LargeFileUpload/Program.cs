@@ -1,4 +1,8 @@
+using Haskap.LargeFileUpload;
+
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddOptions<LargeFileUploadSettings>().BindConfiguration(LargeFileUploadSettings.SectionName);
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();

@@ -1,0 +1,483 @@
+﻿@*
+    For more information on enabling MVC for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
+*@
+@{
+}
+
+<div class="col-md-12 offset-md-3">
+    <div class="row">
+        <div class="col-md-6">
+            <div class="custom-file">
+                <input type="file" class="custom-file-input" id="largeFiles" multiple>
+                <label class="custom-file-label" for="largeFiles">Large Files</label>
+            </div>
+        </div>
+    </div>
+
+
+    <div class="row">
+        <div class="col-md-6">
+            Current File Name:
+            <label id="currentFileNameLabel"></label>
+        </div>
+    </div>
+
+
+    <div class="row mb-1">
+        <div class="col-md-6">
+            <div class="progress" id="currentFileUploadProgressBar" role="progressbar" aria-label="Animated striped example" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-1">
+        <div class="col-md-6">
+            <div class="progress" id="totalFileUploadProgressBar" role="progressbar" aria-label="Animated striped example" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-1">
+        <div class="col-md-6">
+            <button type="button" class="btn btn-primary float-end" id="uploadFilesButton">Upload Files</button>
+            <button type="button" class="btn btn-primary float-end" id="pauseButton">
+                <span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+                Pause
+            </button>
+            <button type="button" class="btn btn-primary float-end" id="continueButton">Continue</button>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6">
+            <button type="button" class="btn btn-primary float-end" id="cancelAllButton">
+                <span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+                Cancel All
+            </button>
+            <button type="button" class="btn btn-primary float-end" id="cancelCurrentButton">
+                <span class="spinner-border spinner-border-sm d-none" aria-hidden="true"></span>
+                Cancel Current
+            </button>
+        </div>
+    </div>
+
+</div>
+
+
+@section Scripts {
+
+    <script src="~/lib/AdminLte_3_2_0/plugins/bs-custom-file-input/bs-custom-file-input.min.js"></script>
+
+    <script>
+
+        $(document).ready(function(){
+            bsCustomFileInput.init();
+        });
+
+        let isInProgress = false;
+        let isPaused = false;
+        let shouldPause = false;
+        let isCancelledCurrent = false;
+        let isCancelledAll = false;
+
+        function refreshDisabledStatusesOfButtons(){
+            refreshDisabledStatusOfUploadButton();
+            refreshDisabledStatusOfPauseButton();
+            refreshDisabledStatusOfContinueButton();
+            refreshDisabledStatusOfCancelCurrentButton();
+            refreshDisabledStatusOfCancelAllButton();
+        }
+
+        setInterval(refreshDisabledStatusesOfButtons, 500);
+
+        function refreshDisabledStatusOfUploadButton(){
+            if(isInProgress){
+                $('#largeFiles').prop("disabled", true);
+                $('#uploadFilesButton').prop("disabled", true);
+            }else{
+                $('#largeFiles').prop("disabled", false);
+                $('#uploadFilesButton').prop("disabled", false);
+            }
+        }
+
+        function refreshDisabledStatusOfPauseButton(){
+            if (isInProgress){
+                if (shouldPause
+                    || isPaused
+                    || currentFileData.operation == Operation.Finalize
+                    || currentFileData.operation == Operation.CancelCurrent
+                    || currentFileData.operation == Operation.CancelAll){
+                    $('#pauseButton').prop("disabled", true);
+                }else{
+                    $('#pauseButton').prop("disabled", false);
+                }
+            } else {
+                $('#pauseButton').prop("disabled", true);
+            }
+
+            if (isPaused){
+                $("#pauseButton>.spinner-border").addClass("d-none");
+            } else if (shouldPause){
+                $("#pauseButton>.spinner-border").removeClass("d-none");
+            }
+        }
+
+        function refreshDisabledStatusOfContinueButton(){
+            if(isPaused){
+                $('#continueButton').prop("disabled", false);
+            }else{
+                $('#continueButton').prop("disabled", true);
+            }
+        }
+
+        function refreshDisabledStatusOfCancelCurrentButton(){
+            if (isInProgress){
+                if (isCancelledCurrent || isPaused || isCancelledAll){
+                    $('#cancelCurrentButton').prop("disabled", true);
+                }else{
+                    $('#cancelCurrentButton').prop("disabled", false);
+                }
+            } else {
+                $('#cancelCurrentButton').prop("disabled", true);
+            }
+
+            if (isCancelledCurrent){
+                $("#cancelCurrentButton>.spinner-border").removeClass("d-none");
+            } else {
+                $("#cancelCurrentButton>.spinner-border").addClass("d-none");
+            }
+        }
+
+        function refreshDisabledStatusOfCancelAllButton(){
+            if (isInProgress){
+                if (isCancelledAll || isPaused || isCancelledCurrent){
+                    $('#cancelAllButton').prop("disabled", true);
+                }else{
+                    $('#cancelAllButton').prop("disabled", false);
+                }
+            } else {
+                $('#cancelAllButton').prop("disabled", true);
+            }
+
+            if (isCancelledAll){
+                $("#cancelAllButton>.spinner-border").removeClass("d-none");
+            } else {
+                $("#cancelAllButton>.spinner-border").addClass("d-none");
+            }
+        }
+
+        let largeFilesCount = 0;
+
+        const Operation = {
+            Init: "init",
+            UploadChunk: "uploadChunk",
+            Finalize: "finalize",
+            CancelCurrent: "cancelCurrent",
+            CancelAll: "cancelAll"
+        };
+
+        let currentFileData = {
+            file: null,
+            chunkCount: 0,
+            operation: Operation.Init,
+            operationArguments: [],
+            index: 0,
+            largeFileUploadSessionId: null,
+            currentChunkIndex: 0
+        }
+
+        let processedLargeFileUploadSessionIds = [];
+
+        let totalProgressBarCurrentSize = 0;
+        let singleProgressSizeForTotalProgressBar = 100;
+
+        let currentProgressBarCurrentSize = 0;
+        let singleProgressSizeForCurrentProgressBar = 100;
+
+        let chunkSize = 1024 * 1024 * 2; // 2 MB
+
+        function initSingleProgressSizeForTotalProgressBar(){
+            let allProgressCount = 0;
+            let allFiles = $('#largeFiles')[0].files;
+            for (let i = 0; i < allFiles.length; ++i) {
+                const file = allFiles[i];
+                let progressCount = Math.ceil(file.size / chunkSize) + 1; // +1 for finalize operation
+                allProgressCount += progressCount;
+            }
+
+            singleProgressSizeForTotalProgressBar = 100 / allProgressCount;
+        }
+
+        function updateTotalProgressBarCurrentSize(progressSize){
+            totalProgressBarCurrentSize += progressSize;
+            if (totalProgressBarCurrentSize > 100) {
+                totalProgressBarCurrentSize = 100;
+            }
+
+            let tempProgressBarCurrentSize = Math.floor(totalProgressBarCurrentSize);
+
+            $("#totalFileUploadProgressBar>.progress-bar").width(tempProgressBarCurrentSize + "%");
+            $("#totalFileUploadProgressBar>.progress-bar").text(tempProgressBarCurrentSize + "%");
+            $("#totalFileUploadProgressBar").attr("aria-valuenow", tempProgressBarCurrentSize);
+        }
+
+        function initSingleProgressSizeForCurrentProgressBar(currentFileIndex){
+            let currentFile = $('#largeFiles')[0].files[currentFileIndex];
+            let progressCount = Math.ceil(currentFile.size / chunkSize) + 1; // +1 for finalize operation
+
+            singleProgressSizeForCurrentProgressBar = 100 / progressCount;
+        }
+
+        function updateCurrentProgressBarCurrentSize(progressSize){
+            currentProgressBarCurrentSize += progressSize;
+            if (currentProgressBarCurrentSize > 100) {
+                currentProgressBarCurrentSize = 100;
+            }
+
+            let tempProgressBarCurrentSize = Math.floor(currentProgressBarCurrentSize);
+
+            $("#currentFileUploadProgressBar>.progress-bar").width(tempProgressBarCurrentSize + "%");
+            $("#currentFileUploadProgressBar>.progress-bar").text(tempProgressBarCurrentSize + "%");
+            $("#currentFileUploadProgressBar").attr("aria-valuenow", tempProgressBarCurrentSize);
+        }
+
+        function initTotalProgressBarCurrentSize(){
+            totalProgressBarCurrentSize = 0;
+            updateTotalProgressBarCurrentSize(0)
+        }
+
+        function initCurrentProgressBarCurrentSize(){
+            currentProgressBarCurrentSize = 0;
+            updateCurrentProgressBarCurrentSize(0)
+        }
+
+        $("#uploadFilesButton").click(function() {
+            initTotalProgressBarCurrentSize();
+            initSingleProgressSizeForTotalProgressBar();
+            largeFilesCount = $('#largeFiles')[0].files.length;
+            init(0);
+        });
+
+        
+
+        function init(currentFileIndex){
+            currentFileData.operation = Operation.Init;
+            currentFileData.operationArguments = arguments;
+
+            let largeFiles = $('#largeFiles')[0].files;
+            currentFileData.file = largeFiles[currentFileIndex];
+            currentFileData.index = currentFileIndex;
+
+            $("#currentFileNameLabel").text(currentFileData.file.name);
+
+            isInProgress = true;
+
+            if (shouldPause){
+                isPaused = true;
+                return;
+            }
+
+            $.ajax({
+                type: "POST",
+                url: '@Url.Action("Init", "LargeFileUpload")'
+            }).done(function (result, status, xhr) {
+                currentFileData.largeFileUploadSessionId = result.largeFileUploadSessionId;
+                processedLargeFileUploadSessionIds.push(result.largeFileUploadSessionId);
+
+                chunkSize = result.chunkSizeInBytes;
+                currentFileData.chunkCount = Math.ceil(currentFileData.file.size / chunkSize);
+
+                initCurrentProgressBarCurrentSize();
+                initSingleProgressSizeForCurrentProgressBar(currentFileIndex);
+
+                uploadChunk(
+                    result.largeFileUploadSessionId,
+                    currentFileIndex,
+                    0
+                );
+            }).fail(function(jqXHR, textStatus){
+                isInProgress = false;
+            });
+        }
+
+        function uploadChunk(largeFileUploadSessionId, currentFileIndex, currentChunkIndex){
+            currentFileData.currentChunkIndex = currentChunkIndex;
+            currentFileData.operation = Operation.UploadChunk;
+            currentFileData.operationArguments = arguments;
+
+            if (shouldPause){
+                isPaused = true;
+                return;
+            }
+
+            let formData = new FormData();
+            let start = currentChunkIndex * chunkSize;
+            let end = Math.min(start + chunkSize, currentFileData.file.size);
+            let chunk = currentFileData.file.slice(start, end);
+            formData.append('largeFileUploadSessionId', largeFileUploadSessionId);
+            formData.append('currentFileIndex', currentFileIndex);
+            formData.append('currentChunkIndex', currentChunkIndex);
+            formData.append('chunk', chunk);
+            $.ajax({
+                type: "POST",
+                url: '@Url.Action("UploadChunk", "LargeFileUpload")',
+                data: formData,
+                processData: false,
+                contentType: false,
+                global: false
+            }).done(function (result, status, xhr) {
+                updateTotalProgressBarCurrentSize(singleProgressSizeForTotalProgressBar);
+                updateCurrentProgressBarCurrentSize(singleProgressSizeForCurrentProgressBar);
+
+                let nextChunkIndex = currentChunkIndex + 1;
+
+                if (isCancelledCurrent) {
+                    cancelCurrent(largeFileUploadSessionId, currentFileIndex);
+                } else if (isCancelledAll) {
+                    cancelAll();
+                } else if( nextChunkIndex < currentFileData.chunkCount){
+                    uploadChunk(largeFileUploadSessionId, currentFileIndex, nextChunkIndex);
+                } else {
+                    finalize(largeFileUploadSessionId, currentFileIndex);
+                }
+            }).fail(function(jqXHR, textStatus){
+                isInProgress = true;
+                isPaused = true;
+            });
+        }
+
+        function finalize(largeFileUploadSessionId, currentFileIndex){
+            currentFileData.operation = Operation.Finalize;
+            currentFileData.operationArguments = arguments;
+
+            if (shouldPause){
+                isPaused = true;
+                return;
+            }
+
+            $.ajax({
+                type: "POST",
+                url: '@Url.Action("Finalize", "LargeFileUpload")',
+                data: {
+                    largeFileUploadSessionId: largeFileUploadSessionId,
+                    currentFileExtension: currentFileData.file.name.split('.').pop()
+                },
+                global: false
+            }).done(function (result, status, xhr) {
+                updateTotalProgressBarCurrentSize(singleProgressSizeForTotalProgressBar);
+                updateCurrentProgressBarCurrentSize(singleProgressSizeForCurrentProgressBar);
+
+                let nextFileIndex = currentFileIndex + 1;
+                if( nextFileIndex < largeFilesCount){
+                    // Upload next file
+                    init(nextFileIndex);
+                } else {
+                    completed();
+                }
+            }).fail(function(jqXHR, textStatus){
+                isInProgress = true;
+                isPaused = true;
+            });
+        }
+
+        function cancelCurrent(largeFileUploadSessionId, currentFileIndex){
+            currentFileData.operation = Operation.CancelCurrent;
+            currentFileData.operationArguments = arguments;
+
+            $.ajax({
+                type: "POST",
+                url: '@Url.Action("CancelCurrent", "LargeFileUpload")',
+                data: {
+                    largeFileUploadSessionId: largeFileUploadSessionId
+                },
+                global: false
+            }).done(function (result, status, xhr) {
+                let remainingChunkCount = currentFileData.chunkCount - currentFileData.currentChunkIndex + 1;
+                updateTotalProgressBarCurrentSize(singleProgressSizeForTotalProgressBar * remainingChunkCount);
+                updateCurrentProgressBarCurrentSize(100);
+
+                isCancelledCurrent = false;
+
+                let nextFileIndex = currentFileIndex + 1;
+                if( nextFileIndex < largeFilesCount){
+                    // Upload next file
+                    init(nextFileIndex);
+                } else {
+                    completed();
+                }
+            }).fail(function(jqXHR, textStatus){
+                isInProgress = true;
+                isPaused = true;
+                isCancelledCurrent = false;
+            });
+        }
+
+        function cancelAll(){
+            currentFileData.operation = Operation.CancelAll;
+            currentFileData.operationArguments = arguments;
+
+            $.ajax({
+                type: "POST",
+                url: '@Url.Action("CancelAll", "LargeFileUpload")',
+                data: {
+                    processedLargeFileUploadSessionIds: processedLargeFileUploadSessionIds
+                },
+                global: false
+            }).done(function (result, status, xhr) {
+                isCancelledAll = false;
+
+                completed();
+            }).fail(function(jqXHR, textStatus){
+                isInProgress = true;
+                isPaused = true;
+                isCancelledAll = false;
+            });
+        }
+
+        function completed(){
+            isInProgress = false;
+            isPaused = false;
+            shouldPause = false;
+
+            updateTotalProgressBarCurrentSize(100);
+            updateCurrentProgressBarCurrentSize(100);
+
+            processedLargeFileUploadSessionIds = [];
+
+            alert("Completed.");
+        }
+
+        $("#pauseButton").on("click", function(){
+            isInProgress = true;
+            isPaused = false;
+            shouldPause = true;
+        });
+
+        $("#continueButton").on("click", function(){
+            isInProgress = true;
+            isPaused = false;
+            shouldPause = false;
+
+            window[currentFileData.operation](...currentFileData.operationArguments);
+
+            // if (currentFileData.operation == Operation.Init){
+            //     init(currentFileData.index);
+            // }else if (currentFileData.operation == Operation.UploadChunk){
+            //     uploadChunk(currentFileData.largeFileUploadSessionId, currentFileData.index, currentFileData.currentChunkIndex);
+            // } else if (currentFileData.operation == Operation.Finalize){
+            //     finalize(currentFileData.largeFileUploadSessionId, currentFileData.index);
+            // }
+        });
+
+        $("#cancelCurrentButton").on("click", function(){
+            isCancelledCurrent = true;
+        });
+
+        $("#cancelAllButton").on("click", function(){
+            isCancelledAll = true;
+        });
+
+    </script>
+}
